@@ -146,4 +146,13 @@ docs/       screenshots/
 
 ## Licença
 
-[MIT](LICENSE) © Carlos Quintas
+Copyright © 2026 Carlos Quintas
+
+Este programa é software livre: você pode redistribuí-lo e/ou modificá-lo sob os termos da
+**GNU General Public License**, conforme publicada pela Free Software Foundation, na versão 3
+da licença ou (a seu critério) qualquer versão posterior.
+
+Ele é distribuído na esperança de ser útil, mas **SEM NENHUMA GARANTIA**, nem mesmo a garantia
+implícita de COMERCIALIZAÇÃO ou ADEQUAÇÃO A UM PROPÓSITO ESPECÍFICO. Veja o texto completo em [LICENSE](LICENSE).
+
+`SPDX-License-Identifier: GPL-3.0-or-later`
