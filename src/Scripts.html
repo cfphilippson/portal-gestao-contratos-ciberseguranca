@@ -1,0 +1,757 @@
+<script>
+'use strict';
+/* =====================================================================
+ * Portal de Gestão de Contratos de Serviços em Cibersegurança — cliente
+ * ===================================================================== */
+
+const LS = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* storage indisponível */ } },
+};
+
+const S = {
+  boot: null, data: null, admin: null,
+  view: LS.get('ccyber.view', 'dashboard'),
+  theme: LS.get('ccyber.theme', 'system'),
+  auto: LS.get('ccyber.auto', '1') === '1',
+  sidebar: LS.get('ccyber.sidebar', 'expanded'),
+  filt: { q: '', faixa: '', tipo: '', parceiro: '' },
+  dashFaixa: null, metric: 'both', sel: null, gateForm: false,
+  version: null, timer: null, busy: 0, lastSync: null, modalOpen: false,
+};
+
+/* ---------- utilidades ---------- */
+const $ = (s, r) => (r || document).querySelector(s);
+const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const brl = (v) => v == null ? '—' : v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+const brlK = (v) => v == null ? '—' : 'R$ ' + Math.round(v / 1000).toLocaleString('pt-BR') + ' mil';
+const brlMi = (v) => 'R$ ' + (v / 1e6).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' mi';
+const brDate = (iso) => iso ? iso.slice(8, 10) + '/' + iso.slice(5, 7) + '/' + iso.slice(0, 4) : '—';
+const MESES = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
+const MESES_LONGO = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
+const DIAS_SEMANA = ['', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado', 'domingo'];
+const initials = (s) => String(s || '?').replace(/@.*/, '').split(/[\s._-]+/).filter(Boolean).slice(0, 2).map((p) => p[0].toUpperCase()).join('') || '?';
+const isAdmin = () => S.boot && S.boot.user && S.boot.user.perfil === 'Administrador';
+const addDaysIso = (iso, n) => new Date(Date.parse(iso + 'T00:00:00Z') + n * 864e5).toISOString().slice(0, 10);
+
+function api(fn, ...args) {
+  return new Promise((resolve, reject) => {
+    const r = google.script.run.withSuccessHandler(resolve).withFailureHandler(reject);
+    r[fn].apply(r, args);
+  });
+}
+
+function toast(msg, kind) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (kind === 'err' ? ' err' : '');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { t.className = 'toast' + (kind === 'err' ? ' err' : ''); }, kind === 'err' ? 6000 : 3200);
+}
+
+function errMsg(e) { return (e && (e.message || e.toString())) || 'Erro inesperado.'; }
+
+function handleErr(e) {
+  const m = errMsg(e);
+  if (/ACESSO_NEGADO|SEM_IDENTIDADE/.test(m)) { boot(); return; }
+  toast(m.replace(/^Exception:\s*/, ''), 'err');
+}
+
+/** Executa uma chamada marcando o botão como ocupado. */
+async function run(btn, fn) {
+  if (btn) { btn.disabled = true; btn.dataset.label = btn.innerHTML; btn.innerHTML = '<span class="spinner" aria-hidden="true"></span>' + btn.innerHTML; }
+  S.busy++;
+  try { return await fn(); } catch (e) { handleErr(e); return undefined; }
+  finally { S.busy--; if (btn && btn.isConnected) { btn.disabled = false; btn.innerHTML = btn.dataset.label; } }
+}
+
+/* ---------- ícones (stroke SVG) ---------- */
+const svg = (d, s) => '<svg width="' + (s || 18) + '" height="' + (s || 18) + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + d + '</svg>';
+const IC = {
+  shield: '<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#7FD1B0" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8.2-8 9-4.6-.8-8-4.5-8-9V6l8-3z"/><path d="M9 12l2 2 4-4"/></svg>',
+  sun: svg('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>', 16),
+  moon: svg('<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>', 16),
+  monitor: svg('<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>', 16),
+  refresh: svg('<path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/>', 16),
+  warn: svg('<path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>', 20),
+  x: svg('<path d="M18 6L6 18M6 6l12 12"/>', 18),
+  clock: svg('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>', 22),
+  grid: svg('<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>', 20),
+  file: svg('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h6"/>', 20),
+  bell: svg('<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/>', 20),
+  users: svg('<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/>', 20),
+  menu: svg('<path d="M4 6h16M4 12h16M4 18h16"/>', 20),
+  chevL: svg('<path d="M11 17l-5-5 5-5M18 17l-5-5 5-5"/>', 18),
+  chevR: svg('<path d="M13 17l5-5-5-5M6 17l5-5-5-5"/>', 18),
+  lock: svg('<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>', 16),
+};
+
+/* ---------- tema ---------- */
+const mq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+function applyTheme() {
+  const dark = S.theme === 'dark' || (S.theme === 'system' && mq && mq.matches);
+  document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  $$('[data-act="theme"]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === S.theme)));
+}
+if (mq) (mq.addEventListener ? mq.addEventListener('change', applyTheme) : mq.addListener(applyTheme));
+function setTheme(t) {
+  S.theme = t; LS.set('ccyber.theme', t); applyTheme();
+  if (S.boot && S.boot.user && S.boot.user.status === 'ativo') api('setTheme', t).catch(() => {});
+}
+
+/* ---------- faixas de vencimento ---------- */
+function faixas() {
+  const asc = (S.data ? S.data.janelas : [90, 60, 30]).slice().sort((a, b) => a - b);
+  return ['vencido'].concat(asc.map((w) => 'j' + w), ['ok', 'sem_data', 'encerrado']);
+}
+function faixaInfo(f) {
+  const asc = (S.data ? S.data.janelas : [90, 60, 30]).slice().sort((a, b) => a - b);
+  if (f === 'vencido') return { label: 'Vencido', cls: 'f-vencido' };
+  if (f === 'ok') return { label: 'Acima de ' + asc[asc.length - 1] + ' dias', cls: 'f-ok' };
+  if (f === 'sem_data') return { label: 'Sem data de fim', cls: 'f-sem_data' };
+  if (f === 'encerrado') return { label: 'Encerrado', cls: 'f-encerrado' };
+  const w = Number(f.slice(1)), i = asc.indexOf(w);
+  return { label: i <= 0 ? 'Até ' + w + ' dias' : (asc[i - 1] + 1) + ' a ' + w + ' dias', cls: 'f-j' + Math.min(i + 1, 3) };
+}
+function windowCls(w) {
+  if (w === 'vencido') return 'f-vencido';
+  const asc = S.data.janelas.slice().sort((a, b) => a - b);
+  const i = asc.indexOf(Number(w));
+  return i < 0 ? 'f-j3' : 'f-j' + Math.min(i + 1, 3);
+}
+function diasLabel(c) {
+  if (c.faixa === 'encerrado') return 'encerrado';
+  if (c.dias === null) return 'sem data';
+  return c.dias < 0 ? 'vencido há ' + (-c.dias) + ' d' : 'vence em ' + c.dias + ' d';
+}
+const badge = (c) => '<span class="badge ' + faixaInfo(c.faixa).cls + '">' + esc(diasLabel(c)) + '</span>';
+const byDias = (a, b) => (a.dias === null ? 1e9 : a.dias) - (b.dias === null ? 1e9 : b.dias);
+
+/* =====================================================================
+ * Header
+ * ===================================================================== */
+const NAV = [['dashboard', 'Dashboard', 'grid'], ['contratos', 'Contratos', 'file'], ['alertas', 'Alertas', 'bell'], ['acessos', 'Acessos', 'users']];
+
+/** Barra superior (atualização, tema) + sidebar. */
+function renderHeader() {
+  const b = S.boot, u = b.user, ativo = u.status === 'ativo';
+  document.documentElement.classList.toggle('gated', !ativo);
+  const themes = [['light', 'Claro', IC.sun], ['dark', 'Escuro', IC.moon], ['system', 'Sistema', IC.monitor]];
+  const themeSeg = '<div class="seg" role="group" aria-label="Tema">' + themes.map(([v, l, i]) =>
+    '<button type="button" data-act="theme" data-v="' + v + '" aria-pressed="' + (S.theme === v) + '" title="Tema ' + l.toLowerCase() + '">' + i + '<span class="lbl">' + l + '</span></button>').join('') + '</div>';
+  const refresh = ativo ? '<button type="button" class="icon-btn" id="btn-refresh" data-act="refresh" aria-label="Atualizar agora" title="Atualizar agora">' + IC.refresh + '</button>' +
+    '<button type="button" class="auto" data-act="toggle-auto" aria-pressed="' + S.auto + '" title="Recarrega automaticamente quando os dados mudarem">' +
+    '<span class="dot" aria-hidden="true"></span><span class="txt">Auto-atualização</span><span class="meta" id="sync-meta"></span></button>' : '';
+  const cur = NAV.find((n) => n[0] === S.view);
+  $('#hdr').innerHTML = (ativo ? '<button type="button" class="icon-btn menu-btn" data-act="open-drawer" aria-label="Abrir menu" aria-controls="sidebar">' + IC.menu + '</button>' : '') +
+    '<span class="tb-title">' + (ativo && cur ? esc(cur[1]) : '') + '</span><div class="hdr-tools">' + refresh + themeSeg + '</div>';
+  renderSidebar();
+  updateSyncMeta();
+}
+
+function renderSidebar() {
+  const sb = $('#sidebar'), b = S.boot, u = b.user;
+  if (u.status !== 'ativo') { sb.innerHTML = ''; return; }
+  const collapsed = S.sidebar === 'collapsed';
+  const logo = b.app.logo ? '<img class="sb-logo" src="' + esc(b.app.logo) + '" alt="Logo">' : IC.shield;
+  const pend = S.admin ? S.admin.pendentes.length : 0;
+  const items = NAV.filter(([v]) => v !== 'acessos' || isAdmin()).map(([v, l, i]) => {
+    const p = v === 'acessos' && pend;
+    return '<li><button type="button" class="sb-item" data-act="nav" data-v="' + v + '"' + (S.view === v ? ' aria-current="page"' : '') + ' title="' + l + (p ? ' (' + pend + ' pendentes)' : '') + '">' +
+      '<span class="sb-ic">' + IC[i] + (p ? '<span class="sb-dot" aria-hidden="true"></span>' : '') + '</span><span class="sb-lbl">' + l + '</span>' +
+      (p ? '<span class="count">' + pend + '<span class="sr"> pendentes</span></span>' : '') + '</button></li>';
+  }).join('');
+  sb.innerHTML = '<div class="sb-brand">' + logo + '<span class="sb-name">' + esc(b.app.nome) + '<small>Cibersegurança · SecOps</small></span></div>' +
+    '<nav aria-label="Principal"><ul class="sb-nav">' + items + '</ul></nav>' +
+    '<div class="sb-foot"><div class="sb-user" title="' + esc(u.email) + '"><div class="avatar" aria-hidden="true">' + esc(initials(u.nome || u.email)) + '</div>' +
+    '<div class="who"><span>' + esc(u.nome || u.email) + '</span><span>' + esc(u.perfil) + '</span></div></div>' +
+    '<button type="button" class="sb-toggle" data-act="toggle-sidebar" aria-expanded="' + !collapsed + '" aria-controls="sidebar" title="' + (collapsed ? 'Expandir menu' : 'Recolher menu') + '">' +
+    (collapsed ? IC.chevR : IC.chevL) + '<span class="sb-lbl">' + (collapsed ? 'Expandir menu' : 'Recolher menu') + '</span></button></div>';
+}
+
+function setDrawer(open) {
+  document.documentElement.classList.toggle('drawer-open', open);
+  if (open) { const a = $('.sb-item[aria-current="page"]') || $('.sb-item'); if (a) a.focus(); }
+}
+
+function updateSyncMeta() {
+  const el = $('#sync-meta');
+  if (!el) return;
+  el.textContent = S.auto ? (S.lastSync ? '· ' + S.lastSync.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '') : '· desligada';
+}
+
+/* =====================================================================
+ * Render principal
+ * ===================================================================== */
+function render() {
+  if (!S.boot) return;
+  const active = document.activeElement;
+  const focusId = active && active.id, caret = active && active.selectionStart;
+  renderHeader();
+  const u = S.boot.user;
+  let html;
+  if (u.status !== 'ativo') html = viewGate();
+  else if (!S.data) html = '<div class="boot"><span class="spinner" aria-hidden="true"></span>Carregando dados…</div>';
+  else {
+    if (S.view === 'acessos' && !isAdmin()) S.view = 'dashboard';
+    html = ({ dashboard: viewDashboard, contratos: viewContratos, alertas: viewAlertas, acessos: viewAcessos }[S.view] || viewDashboard)();
+  }
+  $('#main').innerHTML = html;
+  if (focusId) {
+    const el = document.getElementById(focusId);
+    if (el) { el.focus(); try { if (caret != null) el.setSelectionRange(caret, caret); } catch (e) { /* select */ } }
+  }
+}
+
+/* =====================================================================
+ * Tela de acesso (sem permissão / pendente / recusado)
+ * ===================================================================== */
+function viewGate() {
+  const b = S.boot, u = b.user, r = b.request;
+  const aside = '<aside>' + (b.app.logo ? '<img class="gate-logo" src="' + esc(b.app.logo) + '" alt="Logo">' : '') + '<h1>' + esc(b.app.nome) + '</h1><p>Vigências, valores, SLAs e alertas de vencimento dos contratos de suporte de Cibersegurança. Acesso restrito a usuários aprovados.</p>' +
+    '<ul><li>' + IC.lock + ' Autenticação pela conta Google Workspace corporativa</li><li>' + svg('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>', 16) + ' Acessos e alterações registrados em auditoria</li></ul></aside>';
+  const id = u.email ? '<div class="idchip"><div class="avatar" style="background:var(--hdr-chip);color:#F3F4F1">' + esc(initials(u.email)) + '</div><div style="display:flex;flex-direction:column;min-width:0"><span class="mono small" style="overflow-wrap:anywhere">' + esc(u.email) + '</span><span class="small muted">conta Google identificada</span></div></div>' : '';
+  let body;
+  if (u.status === 'sem_identidade') {
+    body = '<h2 style="font-size:20px">Não foi possível identificar sua conta</h2><p class="muted" style="margin:0">Acesse o portal com sua conta corporativa' + (b.app.dominio ? ' <b>@' + esc(b.app.dominio) + '</b>' : '') + ' no navegador e recarregue a página.</p>';
+  } else if (u.status === 'pendente' && !S.gateForm) {
+    body = '<div style="width:48px;height:48px;border-radius:50%;background:var(--j2-bg);color:var(--j2-fg);display:flex;align-items:center;justify-content:center">' + IC.clock + '</div>' +
+      '<div><h2 style="font-size:20px">Solicitação em análise</h2><p class="muted" style="margin:4px 0 0">Enviada em ' + esc(r.criada_em) + ' · perfil <b>' + esc(r.perfil_solicitado) + '</b>. Os administradores foram notificados por e-mail.</p></div>' +
+      '<ol class="steps"><li class="done"><span class="n">1</span>Solicitação registrada</li><li class="now"><span class="n">2</span>Aprovação do administrador</li><li class="todo"><span class="n">3</span>Acesso liberado</li></ol>' +
+      '<p class="small muted" style="margin:0">' + (S.auto ? 'Esta página verifica a aprovação automaticamente.' : 'Recarregue a página após a aprovação.') + '</p>';
+  } else if (u.status === 'recusado' && !S.gateForm) {
+    body = '<h2 style="font-size:20px;color:var(--vencido)">Solicitação recusada</h2>' +
+      (r && r.motivo ? '<p class="muted" style="margin:0">Motivo informado:</p><p style="margin:0;background:var(--vencido-bg);color:var(--vencido-fg);border-radius:6px;padding:12px">' + esc(r.motivo) + '</p>' : '') +
+      '<button type="button" class="btn" data-act="gate-new">Fazer nova solicitação</button>';
+  } else {
+    body = '<div><h2 style="font-size:20px">Você ainda não tem acesso</h2><p class="muted" style="margin:4px 0 0">Preencha a solicitação. Um administrador vai aprovar ou recusar e você recebe a resposta por e-mail.</p></div>' +
+      '<form id="f-req" class="form-grid" style="grid-template-columns:1fr" novalidate>' +
+      '<div class="field"><label for="rq-nome">Nome completo</label><input class="input" id="rq-nome" name="nome" required maxlength="120" autocomplete="name"></div>' +
+      '<div class="field"><label for="rq-area">Área / diretoria</label><input class="input" id="rq-area" name="area" required maxlength="120" placeholder="Ex.: Infraestrutura de TI"></div>' +
+      '<div class="field"><label for="rq-perfil">Perfil solicitado</label><select class="input" id="rq-perfil" name="perfil">' +
+      '<option value="Leitura">Leitura — consulta a contratos e painéis</option><option value="Gestor">Gestor — recebe alertas dos contratos sob sua gestão</option><option value="Administrador">Administrador — edita contratos e aprova acessos</option></select></div>' +
+      '<div class="field"><label for="rq-just">Justificativa</label><textarea class="input" id="rq-just" name="justificativa" rows="3" maxlength="1000" required placeholder="Por que você precisa de acesso?"></textarea></div>' +
+      '<button type="submit" class="btn primary" style="min-height:46px">Enviar solicitação</button></form>';
+  }
+  return '<div class="gate">' + aside + '<div class="panel"><div class="card">' + id + body + '</div></div></div>';
+}
+
+/* =====================================================================
+ * Dashboard
+ * ===================================================================== */
+function viewDashboard() {
+  const d = S.data, cs = d.contratos;
+  const venc = cs.filter((c) => c.faixa === 'vencido');
+  const jan = cs.filter((c) => c.faixa[0] === 'j').sort(byDias);
+  const ano = cs.filter((c) => c.dias !== null && c.dias >= 0 && c.dias <= 365 && c.faixa !== 'encerrado').sort(byDias);
+  const totO = cs.reduce((s, c) => s + (c.valor_orcado || 0), 0);
+  const totP = cs.reduce((s, c) => s + (c.valor_pago_anterior || 0), 0);
+  const semO = cs.filter((c) => c.valor_orcado == null).length;
+  const parceiros = new Set(cs.map((c) => c.parceiro)).size;
+  const varPct = totP ? Math.round((totO / totP - 1) * 100) : null;
+
+  const banner = venc.length ? '<div class="alert-bar" role="alert">' + IC.warn + '<span class="txt"><strong>' + venc.length + ' contrato' + (venc.length > 1 ? 's' : '') + ' com vigência encerrada</strong> (' +
+    esc(venc.map((c) => c.ferramenta).join(', ')) + '). Confirme se foram renovados e atualize a vigência.</span><button type="button" data-act="goto-faixa" data-v="vencido">Revisar vencidos</button></div>' : '';
+
+  const kpis = [
+    ['Contratos', cs.length, parceiros + ' parceiros', ''],
+    ['Vencidos', venc.length, venc.length ? 'requerem atualização' : 'nenhum', 'vencido'],
+    ['Em janela de alerta', jan.length, jan.length ? jan.slice(0, 2).map((c) => c.ferramenta + ' em ' + c.dias + ' d').join(' · ') : 'nenhum contrato', 'j'],
+    ['Vencem em 12 meses', ano.length, ano.length ? 'próximo: ' + ano[0].ferramenta + ' (' + brDate(ano[0].vigencia_fim) + ')' : '—', 'ano'],
+    [d.rotulos.orcado, brlMi(totO), semO ? semO + ' sem valor informado' : 'todos com valor', ''],
+    [d.rotulos.pago, brlMi(totP), varPct === null ? '—' : 'variação ' + (varPct >= 0 ? '+' : '') + varPct + '% p/ orçado', ''],
+  ].map(([k, v, s, cls]) => '<div class="kpi"><span class="k">' + esc(k) + '</span><span class="v ' + cls + '">' + esc(v) + '</span><span class="s">' + esc(s) + '</span></div>').join('');
+
+  return '<div class="page-head"><div><h1>Visão geral dos contratos</h1><p>Sincronizado em ' + esc(d.sincronizadoEm) + ' · referência ' + brDate(d.today) + '</p></div>' +
+    '<div class="actions"><button type="button" class="btn" data-act="nav" data-v="contratos">Ver todos os contratos</button>' +
+    '<button type="button" class="btn" data-act="print">Imprimir / PDF</button></div></div>' +
+    banner + '<section class="kpis" aria-label="Indicadores">' + kpis + '</section>' +
+    '<div class="grid-2">' + cardStatus(cs) + cardBars(cs) + '</div>' + cardTimeline(cs) +
+    '<div class="grid-2">' + cardUpcoming(ano) + cardLastAlerts() + '</div>';
+}
+
+function cardStatus(cs) {
+  const order = faixas().filter((f) => f !== 'encerrado' || cs.some((c) => c.faixa === f));
+  const count = (f) => cs.filter((c) => c.faixa === f).length;
+  const C = 2 * Math.PI * 60;
+  let acc = 0;
+  const segs = order.filter((f) => count(f) > 0).map((f) => {
+    const len = (count(f) / cs.length) * C, gap = cs.length > 1 ? 2 : 0;
+    const s = '<circle class="' + faixaInfo(f).cls + '" cx="84" cy="84" r="60" fill="none" stroke="var(--c)" stroke-width="22" stroke-dasharray="' + Math.max(0, len - gap) + ' ' + (C - len + gap) + '" stroke-dashoffset="' + (-acc) + '" transform="rotate(-90 84 84)" opacity="' + (S.dashFaixa && S.dashFaixa !== f ? .25 : 1) + '"></circle>';
+    acc += len;
+    return s;
+  }).join('');
+  const legend = order.map((f) => {
+    const i = faixaInfo(f);
+    return '<button type="button" class="' + i.cls + '" data-act="dash-faixa" data-v="' + f + '" aria-pressed="' + (S.dashFaixa === f) + '"><span class="swatch"></span><span class="lb">' + esc(i.label) + '</span><span class="ct">' + count(f) + '</span></button>';
+  }).join('');
+  return '<section class="card" aria-labelledby="h-st"><div class="card-head"><h2 id="h-st">Situação por janela de vencimento</h2><span class="small muted">clique para filtrar a linha do tempo</span></div>' +
+    '<div class="donut-wrap"><svg class="donut" width="168" height="168" viewBox="0 0 168 168" role="img" aria-label="Distribuição de ' + cs.length + ' contratos por situação">' +
+    '<circle cx="84" cy="84" r="60" fill="none" stroke="var(--track)" stroke-width="22"></circle>' + segs +
+    '<text class="n" x="84" y="82" text-anchor="middle">' + cs.length + '</text><text class="l" x="84" y="104" text-anchor="middle">contratos</text></svg>' +
+    '<div class="legend">' + legend + '</div></div></section>';
+}
+
+function cardBars(cs) {
+  const m = S.metric, d = S.data;
+  const items = cs.filter((c) => c.valor_orcado || c.valor_pago_anterior)
+    .sort((a, b) => m === 'pago' ? (b.valor_pago_anterior || 0) - (a.valor_pago_anterior || 0) : (b.valor_orcado || 0) - (a.valor_orcado || 0));
+  const max = Math.max(1, ...items.map((c) => Math.max(c.valor_orcado || 0, c.valor_pago_anterior || 0)));
+  const h = m === 'both' ? 8 : 14;
+  const rows = items.map((c) => '<div class="bar-row" title="' + esc(c.ferramenta + ' · ' + d.rotulos.orcado + ': ' + brl(c.valor_orcado) + ' · ' + d.rotulos.pago + ': ' + brl(c.valor_pago_anterior)) + '">' +
+    '<span class="nm">' + esc(c.ferramenta) + '</span><div class="vals">' +
+    (m !== 'pago' ? '<div class="b o" style="height:' + h + 'px;width:' + ((c.valor_orcado || 0) / max * 100).toFixed(1) + '%"></div>' : '') +
+    (m !== 'orc' ? '<div class="b p" style="height:' + h + 'px;width:' + ((c.valor_pago_anterior || 0) / max * 100).toFixed(1) + '%"></div>' : '') +
+    '</div><span class="amt">' + brlK(m === 'pago' ? c.valor_pago_anterior : c.valor_orcado) + '</span></div>').join('');
+  const btns = [['both', 'Comparar'], ['orc', d.rotulos.orcado], ['pago', d.rotulos.pago]].map(([v, l]) =>
+    '<button type="button" data-act="metric" data-v="' + v + '" aria-pressed="' + (m === v) + '">' + esc(l) + '</button>').join('');
+  return '<section class="card" aria-labelledby="h-val"><div class="card-head"><h2 id="h-val">Valores por ferramenta</h2><div class="seg-light" role="group" aria-label="Métrica">' + btns + '</div></div>' +
+    '<div class="key"><span><i style="background:var(--brand)"></i>' + esc(d.rotulos.orcado) + '</span><span><i style="background:var(--pago)"></i>' + esc(d.rotulos.pago) + '</span></div>' +
+    '<div class="bars">' + (rows || '<p class="empty">Nenhum valor informado.</p>') + '</div></section>';
+}
+
+function cardTimeline(cs) {
+  const d = S.data;
+  const dated = cs.filter((c) => c.vigencia_fim);
+  const y0 = Math.min(Number(d.today.slice(0, 4)) - 1, ...dated.map((c) => Number((c.vigencia_inicio || c.vigencia_fim).slice(0, 4))));
+  const y1 = Math.max(Number(d.today.slice(0, 4)) + 1, ...dated.map((c) => Number(c.vigencia_fim.slice(0, 4)))) + 1;
+  const t0 = Date.parse(y0 + '-01-01'), t1 = Date.parse(y1 + '-01-01');
+  const pos = (iso) => ((Date.parse(iso) - t0) / (t1 - t0) * 100);
+  const years = [];
+  for (let y = y0; y < y1; y++) years.push(y);
+  const grid = years.map((y) => '<span class="tl-grid" style="left:' + pos(y + '-01-01').toFixed(2) + '%"></span>').join('');
+  const today = pos(d.today).toFixed(2);
+  const rows = cs.filter((c) => !S.dashFaixa || c.faixa === S.dashFaixa).sort(byDias).map((c) => {
+    const ini = c.vigencia_inicio || c.vigencia_fim;
+    const bar = c.vigencia_fim ? '<span class="tl-bar ' + faixaInfo(c.faixa).cls + '" style="left:' + pos(ini).toFixed(2) + '%;width:' + Math.max(.4, pos(c.vigencia_fim) - pos(ini)).toFixed(2) + '%" title="' + esc(brDate(c.vigencia_inicio) + ' → ' + brDate(c.vigencia_fim)) + '"></span>' : '';
+    const lbl = c.dias === null ? 's/ data' : c.dias + ' d';
+    return '<div class="tl-row"><button type="button" class="linkish nm" data-act="open-contract" data-id="' + esc(c.id) + '"><span><strong>' + esc(c.ferramenta) + '</strong> · ' + esc(c.parceiro) + '</span></button>' +
+      '<div class="tl-track">' + grid + bar + '<span class="tl-today" style="left:' + today + '%"></span></div><span class="badge ' + faixaInfo(c.faixa).cls + '">' + esc(lbl) + '</span></div>';
+  }).join('');
+  const label = S.dashFaixa ? 'Filtrado: ' + faixaInfo(S.dashFaixa).label + ' · <button type="button" class="btn sm" data-act="dash-faixa" data-v="' + S.dashFaixa + '">Limpar filtro</button>' : 'Todos os contratos, ordenados por vencimento';
+  return '<section class="card" aria-labelledby="h-tl"><div class="card-head"><h2 id="h-tl">Linha do tempo de vigências</h2><span class="small muted">' + label + '</span></div>' +
+    '<div class="scroll-x"><div class="tl"><div class="tl-row"><span></span><div class="tl-axis">' + years.map((y) => '<span style="left:' + pos(y + '-01-01').toFixed(2) + '%">' + y + '</span>').join('') + '</div><span class="small muted" style="text-align:right">dias</span></div>' +
+    (rows || '<p class="empty">Nenhum contrato nesta faixa.</p>') +
+    '<div class="tl-row"><span></span><div class="tl-axis"><span style="left:' + today + '%;transform:translateX(-50%);color:var(--text);font-weight:600">hoje</span></div><span></span></div></div></div></section>';
+}
+
+function cardUpcoming(ano) {
+  const items = ano.map((c) => '<div class="list-item"><div class="date-box"><div class="d">' + c.vigencia_fim.slice(8, 10) + '</div><div class="m">' + MESES[Number(c.vigencia_fim.slice(5, 7)) - 1] + ' ' + c.vigencia_fim.slice(2, 4) + '</div></div>' +
+    '<div class="main"><button type="button" class="linkish" data-act="open-contract" data-id="' + esc(c.id) + '"><strong>' + esc(c.ferramenta) + '</strong></button><span class="small muted">' + esc(c.parceiro + ' · ' + c.tipo_servico) + '</span></div>' + badge(c) + '</div>').join('');
+  return '<section class="card" aria-labelledby="h-up"><h2 id="h-up">Próximos vencimentos (12 meses)</h2>' + (items || '<p class="empty">Nenhum vencimento nos próximos 12 meses.</p>') + '</section>';
+}
+
+function cardLastAlerts() {
+  const items = S.data.log.slice(0, 6).map((g) => {
+    const cls = g.status === 'Erro' ? 'f-vencido' : windowCls(g.janela);
+    return '<div class="list-item"><span class="tag ' + cls + '">' + esc(g.janela === 'vencido' ? 'venc' : g.janela + 'd') + '</span><div class="main"><span>' + esc(g.ferramenta + ' · ' + g.parceiro + ' — fim em ' + brDate(g.vigencia_fim)) + '</span><span class="small muted">' + esc(g.enviado_em) + ' · <span class="st-' + esc(g.status) + '">' + esc(g.status) + '</span></span></div></div>';
+  }).join('');
+  return '<section class="card" aria-labelledby="h-la"><div class="card-head"><h2 id="h-la">Últimos alertas enviados</h2><button type="button" class="btn sm" data-act="nav" data-v="alertas">Ver histórico</button></div>' + (items || '<p class="empty">Nenhum alerta enviado ainda.</p>') + '</section>';
+}
+
+/* =====================================================================
+ * Contratos
+ * ===================================================================== */
+function filteredContracts() {
+  const f = S.filt, q = f.q.trim().toLowerCase();
+  return S.data.contratos.filter((c) =>
+    (!q || [c.id, c.parceiro, c.ferramenta, c.finalidade, c.gestor_nome, c.gestor_email].join(' ').toLowerCase().includes(q)) &&
+    (!f.faixa || c.faixa === f.faixa) && (!f.tipo || c.tipo_servico === f.tipo) && (!f.parceiro || c.parceiro === f.parceiro)
+  ).sort(byDias);
+}
+
+function viewContratos() {
+  const d = S.data, rows = filteredContracts(), admin = isAdmin();
+  const opts = (arr, cur) => arr.map((v) => '<option value="' + esc(v) + '"' + (v === cur ? ' selected' : '') + '>' + esc(v) + '</option>').join('');
+  const tipos = [...new Set(d.contratos.map((c) => c.tipo_servico).filter(Boolean))].sort();
+  const parceiros = [...new Set(d.contratos.map((c) => c.parceiro).filter(Boolean))].sort();
+  if (!S.sel || !d.contratos.some((c) => c.id === S.sel)) S.sel = rows[0] ? rows[0].id : null;
+  const tr = rows.map((c) => '<tr class="' + (c.id === S.sel ? 'sel' : '') + '"><td><button type="button" class="linkish" data-act="sel" data-id="' + esc(c.id) + '"><strong>' + esc(c.ferramenta) + '</strong><span class="small muted">' + esc(c.parceiro + ' · ' + (c.finalidade || '—')) + '</span></button></td>' +
+    '<td style="white-space:nowrap">' + esc(c.tipo_servico || '—') + '</td><td class="mono small" style="white-space:nowrap">' + brDate(c.vigencia_inicio) + ' → ' + brDate(c.vigencia_fim) + '</td><td>' + badge(c) + '</td>' +
+    '<td class="num">' + brl(c.valor_orcado) + '</td><td class="num">' + brl(c.valor_pago_anterior) + '</td><td class="small" style="white-space:nowrap">' + (c.gestor_nome ? esc(c.gestor_nome) : '<span class="faint">a definir</span>') + '</td></tr>').join('');
+  return '<div class="page-head"><div><h1>Contratos</h1><p>' + rows.length + ' de ' + d.contratos.length + ' contratos · ordenados por vencimento</p></div><div class="actions">' +
+    (admin && S.boot.sheetUrl ? '<a class="btn" href="' + esc(S.boot.sheetUrl) + '" target="_blank" rel="noopener">Abrir planilha</a>' : '') +
+    (admin ? '<button type="button" class="btn primary" data-act="new-contract">+ Novo contrato</button>' : '') + '</div></div>' +
+    '<div class="filters" role="search"><div class="field wide"><label for="f-q">Buscar</label><input class="input" id="f-q" type="search" data-filter="q" value="' + esc(S.filt.q) + '" placeholder="Parceiro, ferramenta, finalidade ou gestor"></div>' +
+    '<div class="field"><label for="f-faixa">Situação</label><select class="input" id="f-faixa" data-filter="faixa"><option value="">Todas</option>' + faixas().map((f) => '<option value="' + f + '"' + (S.filt.faixa === f ? ' selected' : '') + '>' + esc(faixaInfo(f).label) + '</option>').join('') + '</select></div>' +
+    '<div class="field"><label for="f-tipo">Tipo de serviço</label><select class="input" id="f-tipo" data-filter="tipo"><option value="">Todos</option>' + opts(tipos, S.filt.tipo) + '</select></div>' +
+    '<div class="field"><label for="f-parc">Parceiro</label><select class="input" id="f-parc" data-filter="parceiro"><option value="">Todos</option>' + opts(parceiros, S.filt.parceiro) + '</select></div></div>' +
+    '<div class="row"><section class="card grow" style="padding:0" aria-label="Lista de contratos"><div class="tbl-wrap"><table class="tbl" style="min-width:860px"><thead><tr><th scope="col">Parceiro / ferramenta</th><th scope="col">Serviço</th><th scope="col">Vigência</th><th scope="col">Situação</th><th scope="col" class="num">' + esc(d.rotulos.orcado) + '</th><th scope="col" class="num">' + esc(d.rotulos.pago) + '</th><th scope="col">Gestor</th></tr></thead><tbody>' +
+    (tr || '<tr><td colspan="7" class="empty" style="text-align:center">Nenhum contrato corresponde aos filtros.</td></tr>') + '</tbody></table></div></section>' +
+    detailPanel() + '</div>';
+}
+
+function detailPanel() {
+  const c = S.data.contratos.find((x) => x.id === S.sel);
+  if (!c) return '<aside class="card side"><p class="empty">Selecione um contrato.</p></aside>';
+  const d = S.data, admin = isAdmin();
+  const asc = d.janelas.slice().sort((a, b) => b - a);
+  const sentKeys = new Set(d.log.filter((g) => g.contrato_id === c.id && g.vigencia_fim === c.vigencia_fim && g.status === 'Enviado').map((g) => String(g.janela)));
+  const pills = c.vigencia_fim ? asc.map((w) => {
+    const sent = sentKeys.has(String(w));
+    const when = addDaysIso(c.vigencia_fim, -w);
+    return '<span class="pill' + (sent ? ' on' : '') + '">' + w + ' dias · ' + (sent ? 'enviado' : when > d.today ? 'agendado ' + brDate(when) : 'não enviado') + '</span>';
+  }).join('') : '<span class="pill">sem data de fim</span>';
+  const kv = [
+    ['ID', c.id], ['Finalidade', c.finalidade], ['Tipo de serviço', c.tipo_servico], ['Vigência', brDate(c.vigencia_inicio) + ' → ' + brDate(c.vigencia_fim)],
+    ['Reajuste', [c.indice_reajuste, c.mes_reajuste].filter(Boolean).join(' · ')], ['SLA contratado', c.sla], ['Renovação / nova', c.renovacao_tipo],
+    ['Valor suporte', c.valor_suporte], [d.rotulos.orcado, brl(c.valor_orcado)], [d.rotulos.pago, brl(c.valor_pago_anterior)],
+    ['Gestor', c.gestor_nome ? c.gestor_nome + (c.gestor_email ? ' · ' + c.gestor_email : '') : 'a definir'], ['Status', c.status_renovacao],
+    ['Atualizado', c.atualizado_em ? c.atualizado_em + ' · ' + c.atualizado_por : c.atualizado_por],
+  ].map(([k, v]) => '<dt>' + esc(k) + '</dt><dd>' + esc(v || '—') + '</dd>').join('');
+  return '<aside class="card side" aria-labelledby="h-det"><div class="card-head" style="align-items:flex-start"><div><span class="small muted">' + esc(c.parceiro) + '</span><h2 id="h-det" style="font-size:20px">' + esc(c.ferramenta) + '</h2></div>' + badge(c) + '</div>' +
+    (c.observacoes ? '<p class="muted" style="margin:0;white-space:pre-line">' + esc(c.observacoes) + '</p>' : '') +
+    '<dl class="kv">' + kv + '</dl><div style="border-top:1px solid var(--track);padding-top:12px;display:flex;flex-direction:column;gap:8px"><span class="sect-lbl">Alertas desta vigência</span><div class="chips">' + pills + '</div></div>' +
+    (admin ? '<div class="actions"><button type="button" class="btn" data-act="edit-contract" data-id="' + esc(c.id) + '">Editar</button><button type="button" class="btn primary" data-act="renew" data-id="' + esc(c.id) + '">Registrar renovação</button>' +
+      '<button type="button" class="btn danger" data-act="del-contract" data-id="' + esc(c.id) + '">Excluir</button></div>' : '') + '</aside>';
+}
+
+/* =====================================================================
+ * Alertas
+ * ===================================================================== */
+function viewAlertas() {
+  const d = S.data, r = d.regras, admin = isAdmin(), lr = d.ultimaExecucao;
+  const lastRun = lr ? 'Última execução: ' + esc(lr.em) + ' (' + esc(lr.por) + ') · ' + lr.avaliados + ' avaliados, ' + lr.enviados + ' enviados' + (lr.erros ? ', <span style="color:var(--vencido);font-weight:600">' + lr.erros + ' com erro</span>' : '') : 'O gatilho diário ainda não executou.';
+  const winOpts = [...new Set([180, 120, 90, 60, 45, 30, 15, 7].concat(r.janelas))].sort((a, b) => b - a);
+  let regras;
+  if (admin) {
+    regras = '<form id="f-regras" class="card" style="flex:1 1 400px" aria-labelledby="h-rg" novalidate><h2 id="h-rg">Regras de disparo</h2>' +
+      '<div class="field"><span class="lbl">Janelas de aviso (dias antes do fim da vigência)</span><div class="chips" role="group" aria-label="Janelas">' +
+      winOpts.map((w) => '<button type="button" class="chip" data-act="chip" data-v="' + w + '" aria-pressed="' + r.janelas.includes(w) + '">' + w + ' dias</button>').join('') + '</div>' +
+      '<span class="small muted">Cada janela dispara uma única vez por contrato e vigência. Se um contrato entra já dentro de uma janela menor, só a menor é enviada.</span></div>' +
+      '<div class="field"><span class="lbl">Destinatários</span><label class="check"><input type="checkbox" checked disabled> Gestor responsável do contrato</label>' +
+      '<label class="check"><input type="checkbox" name="notificarAdmins"' + (r.notificarAdmins ? ' checked' : '') + '> Administradores do portal</label></div>' +
+      '<div class="field"><label for="rg-cc">Cópia fixa (lista de distribuição, separada por vírgula)</label><input class="input mono" id="rg-cc" name="ccFixo" value="' + esc(r.ccFixo) + '" placeholder="lista@example.com"></div>' +
+      '<button type="button" class="switch" data-act="switch" aria-pressed="' + r.reenvioVencidos + '" id="rg-reenvio"><span class="trk" aria-hidden="true"></span><span>Reenviar aviso semanal enquanto o contrato estiver vencido e sem renovação registrada</span></button>' +
+      '<div class="form-grid"><div class="field"><label for="rg-dia">Dia do reenvio de vencidos</label><select class="input" id="rg-dia" name="diaReenvio">' + DIAS_SEMANA.slice(1).map((n, i) => '<option value="' + (i + 1) + '"' + (r.diaReenvio === i + 1 ? ' selected' : '') + '>' + n + '</option>').join('') + '</select></div>' +
+      '<div class="field"><label for="rg-hora">Horário do gatilho diário</label><select class="input" id="rg-hora" name="horaGatilho">' + Array.from({ length: 24 }, (_, h) => '<option value="' + h + '"' + (r.horaGatilho === h ? ' selected' : '') + '>' + String(h).padStart(2, '0') + ':00 – ' + String((h + 1) % 24).padStart(2, '0') + ':00</option>').join('') + '</select></div>' +
+      '<div class="field"><label for="rg-auto">Auto-atualização do portal (segundos)</label><input class="input" id="rg-auto" name="autoRefreshSeg" type="number" min="15" max="3600" value="' + r.autoRefreshSeg + '"></div></div>' +
+      '<div class="actions"><button type="submit" class="btn primary">Salvar regras</button><button type="button" class="btn" data-act="run-now">Executar agora</button><button type="button" class="btn" data-act="test-mail">Enviar teste para mim</button></div></form>';
+  } else {
+    regras = '<section class="card" style="flex:1 1 400px" aria-labelledby="h-rg"><h2 id="h-rg">Regras de disparo</h2><dl class="kv">' +
+      '<dt>Janelas</dt><dd>' + r.janelas.map((w) => w + ' dias').join(', ') + '</dd><dt>Destinatários</dt><dd>Gestor do contrato' + (r.notificarAdmins ? ' + administradores' : '') + (r.ccFixo ? ' + lista fixa' : '') + '</dd>' +
+      '<dt>Vencidos</dt><dd>' + (r.reenvioVencidos ? 'reenvio semanal (' + DIAS_SEMANA[r.diaReenvio] + ')' : 'sem reenvio') + '</dd><dt>Execução</dt><dd>diária, ' + String(r.horaGatilho).padStart(2, '0') + 'h</dd></dl></section>';
+  }
+  const next = d.proximos.map((n) => '<tr><td class="mono small">' + brDate(n.data) + '</td><td><span class="tag ' + windowCls(n.janela) + '">' + n.janela + 'd</span></td><td><strong>' + esc(n.ferramenta) + '</strong> · ' + esc(n.parceiro) + '</td><td class="mono small">' + brDate(n.vigencia_fim) + '</td></tr>').join('');
+  const hist = d.log.map((g) => '<tr><td class="mono small" style="white-space:nowrap">' + esc(g.enviado_em) + '</td><td><span class="tag ' + windowCls(g.janela) + '">' + esc(g.janela === 'vencido' ? 'venc' : g.janela + 'd') + '</span></td><td><strong>' + esc(g.ferramenta) + '</strong> · ' + esc(g.parceiro) + '</td>' +
+    (admin ? '<td class="small muted">' + esc(g.destinatarios) + '</td>' : '') + '<td class="st-' + esc(g.status) + '">' + esc(g.status) + '</td></tr>').join('');
+  return '<div class="page-head"><div><h1>Alertas de vencimento</h1><p>' + lastRun + '</p></div></div>' +
+    '<div class="row">' + regras + '<section class="card" style="flex:2 1 560px;min-width:0" aria-labelledby="h-nx"><div class="card-head"><h2 id="h-nx">Próximos disparos programados</h2><span class="small muted">' + d.proximos.length + ' próximos</span></div>' +
+    '<div class="tbl-wrap"><table class="tbl" style="min-width:540px"><thead><tr><th scope="col">Data do disparo</th><th scope="col">Janela</th><th scope="col">Contrato</th><th scope="col">Fim da vigência</th></tr></thead><tbody>' + (next || '<tr><td colspan="4" class="empty">Nenhum disparo futuro.</td></tr>') + '</tbody></table></div></section></div>' +
+    '<section class="card" aria-labelledby="h-hi"><div class="card-head"><h2 id="h-hi">Histórico de envios</h2><span class="small muted">' + d.log.length + ' registros mais recentes</span></div>' +
+    '<div class="tbl-wrap"><table class="tbl" style="min-width:760px"><thead><tr><th scope="col">Enviado em</th><th scope="col">Janela</th><th scope="col">Contrato</th>' + (admin ? '<th scope="col">Destinatários</th>' : '') + '<th scope="col">Status</th></tr></thead><tbody>' +
+    (hist || '<tr><td colspan="5" class="empty">Nenhum envio registrado.</td></tr>') + '</tbody></table></div></section>';
+}
+
+/* =====================================================================
+ * Acessos (Administrador)
+ * ===================================================================== */
+function viewAcessos() {
+  const a = S.admin;
+  if (!a) return '<div class="boot"><span class="spinner" aria-hidden="true"></span>Carregando acessos…</div>';
+  const perfOpts = (cur) => S.boot.app.perfis.map((p) => '<option' + (p === cur ? ' selected' : '') + '>' + p + '</option>').join('');
+  const reqs = a.pendentes.map((r) => '<div class="req" data-req="' + esc(r.id) + '"><div class="avatar" aria-hidden="true">' + esc(initials(r.nome || r.email)) + '</div>' +
+    '<div class="who"><strong>' + esc(r.nome) + '</strong><span class="mono small muted" style="overflow-wrap:anywhere">' + esc(r.email) + '</span><span class="small muted">' + esc(r.area) + ' · “' + esc(r.justificativa) + '”</span></div>' +
+    '<div class="meta"><span>Solicitou: <strong style="color:var(--text)">' + esc(r.perfil_solicitado) + '</strong></span><span>' + esc(r.criada_em) + '</span></div>' +
+    '<div class="dec"><div class="field"><label for="ap-p-' + esc(r.id) + '">Conceder como</label><select class="input" id="ap-p-' + esc(r.id) + '" data-role="perfil">' + perfOpts(r.perfil_solicitado) + '</select></div>' +
+    '<div class="field"><label for="ap-e-' + esc(r.id) + '">Escopo</label><input class="input mono" style="width:150px" id="ap-e-' + esc(r.id) + '" data-role="escopo" value="*" title="* = todos, ou IDs separados por vírgula (CT-001,CT-013)"></div>' +
+    '<button type="button" class="btn danger" data-act="deny" data-id="' + esc(r.id) + '">Recusar</button><button type="button" class="btn primary" data-act="approve" data-id="' + esc(r.id) + '">Aprovar</button></div></div>').join('');
+  const users = a.usuarios.slice().sort((x, y) => x.perfil.localeCompare(y.perfil) || x.email.localeCompare(y.email)).map((u) => {
+    const me = u.email === a.me;
+    return '<tr><td><div style="display:flex;flex-direction:column"><strong>' + esc(u.nome || '—') + (me ? ' <span class="small faint">(você)</span>' : '') + '</strong><span class="mono small muted">' + esc(u.email) + '</span></div></td>' +
+      '<td><span class="badge perfil-' + esc(u.perfil) + '">' + esc(u.perfil) + '</span></td><td class="small">' + esc(u.escopo === '*' ? 'Todos os contratos' : u.escopo) + '</td>' +
+      '<td class="mono small">' + esc(u.ultimo_acesso || '—') + '</td><td class="small muted">' + esc(u.aprovado_por || '—') + '</td>' +
+      '<td style="text-align:right;white-space:nowrap"><button type="button" class="btn sm" data-act="edit-user" data-email="' + esc(u.email) + '">Editar</button> ' +
+      '<button type="button" class="btn sm danger" data-act="remove-user" data-email="' + esc(u.email) + '"' + (me ? ' disabled title="Você não pode remover o seu próprio acesso"' : '') + '>Remover</button></td></tr>';
+  }).join('');
+  const dec = a.decididas.slice(0, 8).map((r) => '<div class="list-item"><span class="badge ' + (r.status === 'Aprovada' ? 'f-ok' : 'f-vencido') + '">' + esc(r.status) + '</span><div class="main"><span>' + esc(r.nome + ' · ' + r.email) + '</span><span class="small muted">' + esc(r.decidido_em + ' por ' + r.decidido_por + (r.motivo ? ' · ' + r.motivo : '')) + '</span></div></div>').join('');
+  const audit = a.auditoria.slice(0, 15).map((x) => '<div class="list-item" style="flex-direction:column;align-items:flex-start;gap:2px"><span>' + esc(x.acao) + ' · <span class="muted">' + esc(x.detalhe) + '</span></span><span class="mono small faint">' + esc(x.quando + ' · ' + x.usuario) + '</span></div>').join('');
+  return '<div class="page-head"><div><h1>Controle de acesso</h1><p>Usuários e perfis ficam na aba Usuarios; toda ação é registrada em Auditoria.</p></div></div>' +
+    '<section class="card" aria-labelledby="h-pd"><h2 id="h-pd">Solicitações pendentes (' + a.pendentes.length + ')</h2>' + (reqs || '<p class="empty">Nenhuma solicitação pendente.</p>') + '</section>' +
+    '<div class="row"><section class="card grow" aria-labelledby="h-us"><div class="card-head"><h2 id="h-us">Usuários com acesso</h2><span class="small muted">' + a.usuarios.length + ' ativos</span></div>' +
+    '<div class="tbl-wrap"><table class="tbl" style="min-width:760px"><thead><tr><th scope="col">Usuário</th><th scope="col">Perfil</th><th scope="col">Escopo</th><th scope="col">Último acesso</th><th scope="col">Aprovado por</th><th scope="col"><span class="sr">Ações</span></th></tr></thead><tbody>' + users + '</tbody></table></div></section>' +
+    '<section class="card side" aria-labelledby="h-pf"><h2 id="h-pf">Perfis</h2><dl class="kv" style="grid-template-columns:110px 1fr"><dt><span class="badge perfil-Leitura">Leitura</span></dt><dd>Dashboard, contratos e alertas no escopo. Não recebe e-mails.</dd>' +
+    '<dt><span class="badge perfil-Gestor">Gestor</span></dt><dd>Leitura + recebe alertas dos contratos em que é gestor responsável.</dd><dt><span class="badge perfil-Administrador">Admin</span></dt><dd>Edita contratos e regras, aprova e remove acessos.</dd></dl>' +
+    '<h3>Decisões recentes</h3>' + (dec || '<p class="empty">Nenhuma.</p>') + '<h3>Auditoria recente</h3>' + (audit || '<p class="empty">Nenhum registro.</p>') + '</section></div>';
+}
+
+/* =====================================================================
+ * Modais
+ * ===================================================================== */
+function openModal(html, size) {
+  S.modalOpen = true;
+  S.lastFocus = document.activeElement;
+  $('#modal-root').innerHTML = '<div class="modal-bg" data-act="modal-bg"><div class="modal ' + (size || '') + '" role="dialog" aria-modal="true" aria-labelledby="m-title">' + html + '</div></div>';
+  const first = $('#modal-root .body input, #modal-root .body select, #modal-root .body textarea, #modal-root footer .btn');
+  if (first) first.focus();
+}
+function closeModal() {
+  $('#modal-root').innerHTML = '';
+  S.modalOpen = false;
+  if (S.pendingRender) { S.pendingRender = false; render(); }
+  if (S.lastFocus && S.lastFocus.isConnected) S.lastFocus.focus();
+}
+const mHead = (t) => '<header><h2 id="m-title" style="font-size:18px">' + esc(t) + '</h2><button type="button" class="x" data-act="modal-close" aria-label="Fechar">' + IC.x + '</button></header>';
+
+function confirmDialog(title, msg, okLabel, danger) {
+  return new Promise((resolve) => {
+    S.confirmResolve = resolve;
+    openModal(mHead(title) + '<div class="body"><p style="margin:0">' + msg + '</p></div><footer><button type="button" class="btn" data-act="confirm-no">Cancelar</button><button type="button" class="btn ' + (danger ? 'danger solid' : 'primary') + '" data-act="confirm-yes">' + esc(okLabel) + '</button></footer>', 'sm');
+  });
+}
+
+function contractModal(c) {
+  c = c || { status_renovacao: 'Em vigor', indice_reajuste: 'IPCA' };
+  const d = S.data;
+  const tipos = [...new Set(d.contratos.map((x) => x.tipo_servico).filter(Boolean))];
+  const f = (name, label, type, extra) => '<div class="field' + (extra && extra.full ? ' full' : '') + '"><label for="c-' + name + '">' + label + '</label>' +
+    (type === 'textarea' ? '<textarea class="input" id="c-' + name + '" name="' + name + '" rows="3" maxlength="2000">' + esc(c[name]) + '</textarea>'
+      : '<input class="input" id="c-' + name + '" name="' + name + '" type="' + (type || 'text') + '" value="' + esc(c[name] == null ? '' : c[name]) + '"' + (extra && extra.attrs || '') + '>') + '</div>';
+  const sel = (name, label, arr) => '<div class="field"><label for="c-' + name + '">' + label + '</label><select class="input" id="c-' + name + '" name="' + name + '">' + arr.map((v) => '<option value="' + esc(v) + '"' + (String(c[name] || '') === v ? ' selected' : '') + '>' + esc(v || '—') + '</option>').join('') + '</select></div>';
+  openModal(mHead(c.id ? 'Editar ' + c.id + ' · ' + c.ferramenta : 'Novo contrato') +
+    '<form id="f-contract" novalidate><input type="hidden" name="id" value="' + esc(c.id || '') + '"><div class="body"><div class="form-grid">' +
+    f('parceiro', 'Parceiro *', 'text', { attrs: ' required maxlength="120"' }) + f('ferramenta', 'Ferramenta *', 'text', { attrs: ' required maxlength="120"' }) +
+    f('finalidade', 'Finalidade', 'text', { full: true }) +
+    f('tipo_servico', 'Tipo de serviço', 'text', { attrs: ' list="dl-tipos"' }) + f('sla', 'SLA contratado') +
+    f('vigencia_inicio', 'Início da vigência', 'date') + f('vigencia_fim', 'Fim da vigência', 'date') +
+    f('indice_reajuste', 'Índice de reajuste') + sel('mes_reajuste', 'Mês de reajuste', [''].concat(MESES_LONGO)) +
+    f('renovacao_tipo', 'Renovação × nova contratação') + sel('status_renovacao', 'Status', S.boot.app.statusContrato) +
+    f('valor_suporte', 'Valor suporte (condição comercial)', 'text', { full: true }) +
+    f('valor_orcado', esc(d.rotulos.orcado) + ' (R$)', 'number', { attrs: ' min="0" step="0.01"' }) + f('valor_pago_anterior', esc(d.rotulos.pago) + ' (R$)', 'number', { attrs: ' min="0" step="0.01"' }) +
+    f('gestor_nome', 'Gestor responsável') + f('gestor_email', 'E-mail do gestor (recebe os alertas)', 'email') +
+    f('observacoes', 'Observações', 'textarea', { full: true }) +
+    '</div><datalist id="dl-tipos">' + tipos.map((t) => '<option value="' + esc(t) + '">').join('') + '</datalist></div>' +
+    '<footer><button type="button" class="btn" data-act="modal-close">Cancelar</button><button type="submit" class="btn primary">Salvar contrato</button></footer></form>');
+}
+
+function renewModal(c) {
+  const ini = c.vigencia_fim ? addDaysIso(c.vigencia_fim, 1) : S.data.today;
+  const fim = addDaysIso(new Date(Date.parse(ini) + 365 * 864e5).toISOString().slice(0, 10), -1);
+  openModal(mHead('Registrar renovação · ' + c.ferramenta) + '<form id="f-renew" data-id="' + esc(c.id) + '" novalidate><div class="body">' +
+    '<p class="muted" style="margin:0">Vigência atual: ' + brDate(c.vigencia_inicio) + ' → ' + brDate(c.vigencia_fim) + '. Ao salvar, o status volta para “Em vigor” e o ciclo de alertas recomeça para a nova vigência.</p>' +
+    '<div class="form-grid"><div class="field"><label for="rn-ini">Novo início</label><input class="input" id="rn-ini" name="inicio" type="date" value="' + ini + '" required></div>' +
+    '<div class="field"><label for="rn-fim">Novo fim</label><input class="input" id="rn-fim" name="fim" type="date" value="' + fim + '" required></div>' +
+    '<div class="field full"><label for="rn-val">' + esc(S.data.rotulos.orcado) + ' (opcional, R$)</label><input class="input" id="rn-val" name="valor" type="number" min="0" step="0.01" value="' + (c.valor_orcado == null ? '' : c.valor_orcado) + '"></div>' +
+    '<div class="field full"><label for="rn-obs">Observação (anexada ao histórico do contrato)</label><textarea class="input" id="rn-obs" name="obs" rows="2" maxlength="500" placeholder="Ex.: renovado por 12 meses, pedido de compra nº …"></textarea></div></div></div>' +
+    '<footer><button type="button" class="btn" data-act="modal-close">Cancelar</button><button type="submit" class="btn primary">Registrar renovação</button></footer></form>', 'sm');
+}
+
+function userModal(u) {
+  const all = !u.escopo || u.escopo === '*';
+  const ids = all ? [] : u.escopo.split(',');
+  const list = S.admin.contratosRef.map((c) => '<label class="check"><input type="checkbox" name="ct" value="' + esc(c.id) + '"' + (ids.includes(c.id) ? ' checked' : '') + (all ? ' disabled' : '') + '> <span class="mono small">' + esc(c.id) + '</span> ' + esc(c.label) + '</label>').join('');
+  openModal(mHead('Editar acesso') + '<form id="f-user" data-email="' + esc(u.email) + '" novalidate><div class="body">' +
+    '<div class="idchip"><div class="avatar" style="background:var(--hdr-chip);color:#F3F4F1">' + esc(initials(u.nome || u.email)) + '</div><div style="display:flex;flex-direction:column"><strong>' + esc(u.nome || '—') + '</strong><span class="mono small muted">' + esc(u.email) + '</span></div></div>' +
+    '<div class="field"><label for="u-perfil">Perfil</label><select class="input" id="u-perfil" name="perfil">' + S.boot.app.perfis.map((p) => '<option' + (p === u.perfil ? ' selected' : '') + '>' + p + '</option>').join('') + '</select></div>' +
+    '<div class="field"><span class="lbl">Escopo de contratos</span><label class="check"><input type="checkbox" name="todos" data-act="scope-all"' + (all ? ' checked' : '') + '> Todos os contratos</label>' +
+    '<div class="checklist">' + list + '</div><span class="small muted">Gestores sempre veem os contratos em que constam como gestor responsável. O escopo não se aplica a Administradores.</span></div></div>' +
+    '<footer><button type="button" class="btn" data-act="modal-close">Cancelar</button><button type="submit" class="btn primary">Salvar</button></footer></form>');
+}
+
+function denyModal(id) {
+  openModal(mHead('Recusar solicitação') + '<form id="f-deny" data-id="' + esc(id) + '" novalidate><div class="body"><div class="field"><label for="dn-mot">Motivo (enviado ao solicitante)</label><textarea class="input" id="dn-mot" name="motivo" rows="3" maxlength="500"></textarea></div></div>' +
+    '<footer><button type="button" class="btn" data-act="modal-close">Cancelar</button><button type="submit" class="btn danger solid">Recusar</button></footer></form>', 'sm');
+}
+
+function testMailModal() {
+  const cs = S.data.contratos.filter((c) => c.vigencia_fim).sort(byDias);
+  openModal(mHead('Enviar e-mail de teste') + '<form id="f-test" novalidate><div class="body"><p class="muted" style="margin:0">O e-mail vai apenas para você (' + esc(S.boot.user.email) + ') e não é gravado no histórico.</p>' +
+    '<div class="field"><label for="t-ct">Contrato de exemplo</label><select class="input" id="t-ct" name="id">' + cs.map((c) => '<option value="' + esc(c.id) + '">' + esc(c.ferramenta + ' · ' + c.parceiro + ' (' + diasLabel(c) + ')') + '</option>').join('') + '</select></div></div>' +
+    '<footer><button type="button" class="btn" data-act="modal-close">Cancelar</button><button type="submit" class="btn primary">Enviar teste</button></footer></form>', 'sm');
+}
+
+/* =====================================================================
+ * Ações (delegação de eventos)
+ * ===================================================================== */
+const findContract = (id) => S.data.contratos.find((c) => c.id === id);
+const setData = (d) => { if (d) { S.data = d; S.version = d.version; S.lastSync = new Date(); } };
+const setAdmin = (a) => { if (a) S.admin = a; };
+
+const ACTIONS = {
+  'toggle-sidebar': () => {
+    S.sidebar = S.sidebar === 'collapsed' ? 'expanded' : 'collapsed';
+    LS.set('ccyber.sidebar', S.sidebar);
+    document.documentElement.setAttribute('data-sidebar', S.sidebar);
+    renderSidebar();
+    const t = $('.sb-toggle'); if (t) t.focus();
+  },
+  'open-drawer': () => setDrawer(true),
+  'close-drawer': () => setDrawer(false),
+  'nav': (el) => { setDrawer(false); S.view = el.dataset.v; LS.set('ccyber.view', S.view); render(); $('#main').focus(); window.scrollTo(0, 0); if (S.view === 'acessos' && !S.admin) loadAdmin(); },
+  'theme': (el) => setTheme(el.dataset.v),
+  'refresh': async (el) => {
+    el.classList.add('spin');
+    const ok = await run(null, async () => { await reloadAll(); return true; });
+    el.classList.remove('spin');
+    if (ok) toast('Dados atualizados.');
+  },
+  'toggle-auto': () => { S.auto = !S.auto; LS.set('ccyber.auto', S.auto ? '1' : '0'); startPolling(); renderHeader(); toast(S.auto ? 'Auto-atualização ligada.' : 'Auto-atualização desligada.'); },
+  'print': () => window.print(),
+  'dash-faixa': (el) => { S.dashFaixa = S.dashFaixa === el.dataset.v ? null : el.dataset.v; render(); },
+  'metric': (el) => { S.metric = el.dataset.v; render(); },
+  'goto-faixa': (el) => { S.filt = { q: '', faixa: el.dataset.v, tipo: '', parceiro: '' }; S.view = 'contratos'; S.sel = null; render(); },
+  'open-contract': (el) => { S.view = 'contratos'; S.sel = el.dataset.id; S.filt = { q: '', faixa: '', tipo: '', parceiro: '' }; render(); window.scrollTo(0, 0); },
+  'sel': (el) => { S.sel = el.dataset.id; render(); },
+  'new-contract': () => contractModal(null),
+  'edit-contract': (el) => contractModal(findContract(el.dataset.id)),
+  'renew': (el) => renewModal(findContract(el.dataset.id)),
+  'del-contract': async (el) => {
+    const c = findContract(el.dataset.id);
+    if (!(await confirmDialog('Excluir contrato', 'Excluir <b>' + esc(c.ferramenta + ' · ' + c.parceiro) + '</b> (' + esc(c.id) + ')? A linha será removida da planilha. Prefira o status “Encerrado” para manter o histórico.', 'Excluir', true))) return;
+    await run(null, async () => { setData(await api('deleteContract', c.id)); S.sel = null; render(); toast('Contrato excluído.'); });
+  },
+  'chip': (el) => el.setAttribute('aria-pressed', String(el.getAttribute('aria-pressed') !== 'true')),
+  'switch': (el) => el.setAttribute('aria-pressed', String(el.getAttribute('aria-pressed') !== 'true')),
+  'run-now': async (el) => {
+    if (!(await confirmDialog('Executar alertas agora', 'Os alertas pendentes serão enviados imediatamente aos destinatários reais. Cada janela continua sendo enviada uma única vez.', 'Executar'))) return;
+    await run(el, async () => { const r = await api('runAlertsNow'); await reloadAll(); toast(r.enviados + ' alerta(s) enviado(s), ' + r.erros + ' erro(s).', r.erros ? 'err' : ''); });
+  },
+  'test-mail': () => testMailModal(),
+  'approve': async (el) => {
+    const box = el.closest('.req');
+    await run(el, async () => {
+      setAdmin(await api('decideRequest', el.dataset.id, 'aprovar', $('[data-role="perfil"]', box).value, $('[data-role="escopo"]', box).value, ''));
+      render(); toast('Acesso aprovado. O solicitante foi avisado por e-mail.');
+    });
+  },
+  'deny': (el) => denyModal(el.dataset.id),
+  'edit-user': (el) => userModal(S.admin.usuarios.find((u) => u.email === el.dataset.email)),
+  'remove-user': async (el) => {
+    const u = S.admin.usuarios.find((x) => x.email === el.dataset.email);
+    if (!(await confirmDialog('Remover acesso', 'Remover <b>' + esc(u.nome || u.email) + '</b> (' + esc(u.email) + ', ' + esc(u.perfil) + ') do portal? O acesso é revogado imediatamente e a pessoa precisará solicitar de novo.', 'Remover acesso', true))) return;
+    await run(null, async () => { setAdmin(await api('removeUser', u.email)); render(); toast('Usuário removido.'); });
+  },
+  'scope-all': (el) => $$('#f-user input[name="ct"]').forEach((c) => { c.disabled = el.checked; }),
+  'gate-new': () => { S.gateForm = true; render(); },
+  'modal-close': () => closeModal(),
+  'modal-bg': (el, e) => { if (e.target === el) closeModal(); },
+  'confirm-yes': () => { const r = S.confirmResolve; S.confirmResolve = null; closeModal(); if (r) r(true); },
+  'confirm-no': () => { const r = S.confirmResolve; S.confirmResolve = null; closeModal(); if (r) r(false); },
+};
+
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('[data-act]');
+  if (!el || (el.disabled && el.tagName === 'BUTTON')) return;
+  const fn = ACTIONS[el.dataset.act];
+  if (!fn) return;
+  if (el.tagName === 'INPUT') { fn(el, e); return; }
+  if (el.dataset.act !== 'modal-bg') e.preventDefault();
+  fn(el, e);
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && document.documentElement.classList.contains('drawer-open')) { setDrawer(false); return; }
+  if (e.key === 'Escape' && S.modalOpen) { if (S.confirmResolve) ACTIONS['confirm-no'](); else closeModal(); }
+});
+
+document.addEventListener('input', (e) => {
+  const k = e.target.dataset && e.target.dataset.filter;
+  if (!k) return;
+  S.filt[k] = e.target.value;
+  if (e.target.tagName === 'INPUT') { clearTimeout(S._ft); S._ft = setTimeout(render, 150); } else render();
+});
+
+document.addEventListener('submit', async (e) => {
+  const f = e.target;
+  const fid = f.getAttribute('id'); // não usar f.id: o input name="id" sobrescreve a propriedade
+  e.preventDefault();
+  const btn = f.querySelector('[type="submit"]');
+  const val = Object.fromEntries(new FormData(f).entries());
+  if (fid === 'f-req') {
+    if (!val.nome || !val.area || !val.justificativa) { toast('Preencha todos os campos.', 'err'); return; }
+    await run(btn, async () => { S.boot = await api('submitAccessRequest', val); S.gateForm = false; render(); startPolling(); toast('Solicitação enviada.'); });
+  } else if (fid === 'f-contract') {
+    await run(btn, async () => { setData(await api('saveContract', val)); closeModal(); render(); toast('Contrato salvo.'); });
+  } else if (fid === 'f-renew') {
+    await run(btn, async () => { setData(await api('registerRenewal', f.dataset.id, val.inicio, val.fim, val.valor, val.obs)); closeModal(); render(); toast('Renovação registrada.'); });
+  } else if (fid === 'f-user') {
+    const escopo = f.todos.checked ? '*' : $$('input[name="ct"]:checked', f).map((c) => c.value).join(',');
+    if (!escopo) { toast('Selecione ao menos um contrato ou marque “Todos os contratos”.', 'err'); return; }
+    await run(btn, async () => { setAdmin(await api('updateUser', f.dataset.email, val.perfil, escopo)); closeModal(); render(); toast('Acesso atualizado.'); });
+  } else if (fid === 'f-deny') {
+    await run(btn, async () => { setAdmin(await api('decideRequest', f.dataset.id, 'recusar', '', '', val.motivo || '')); closeModal(); render(); toast('Solicitação recusada.'); });
+  } else if (fid === 'f-test') {
+    await run(btn, async () => { const m = await api('sendTestAlert', val.id); closeModal(); toast(m); });
+  } else if (fid === 'f-regras') {
+    const cfg = {
+      janelas: $$('.chip[aria-pressed="true"]', f).map((c) => Number(c.dataset.v)),
+      notificarAdmins: f.notificarAdmins.checked, ccFixo: val.ccFixo || '',
+      reenvioVencidos: $('#rg-reenvio').getAttribute('aria-pressed') === 'true',
+      diaReenvio: Number(val.diaReenvio), horaGatilho: Number(val.horaGatilho), autoRefreshSeg: Number(val.autoRefreshSeg),
+    };
+    await run(btn, async () => {
+      setData(await api('saveAlertConfig', cfg));
+      S.boot.app.autoRefreshSeg = S.data.regras.autoRefreshSeg; startPolling(); render(); toast('Regras salvas.');
+    });
+  }
+});
+
+/* =====================================================================
+ * Carga de dados e auto-atualização
+ * ===================================================================== */
+async function loadAdmin() {
+  try { setAdmin(await api('getAdminData')); render(); } catch (e) { handleErr(e); }
+}
+
+async function reloadAll() {
+  const jobs = [api('getData')];
+  if (isAdmin()) jobs.push(api('getAdminData'));
+  const res = await Promise.all(jobs);
+  setData(res[0]);
+  if (res[1]) setAdmin(res[1]);
+  if (S.modalOpen) S.pendingRender = true; else render();
+}
+
+function stopPolling() { if (S.timer) { clearInterval(S.timer); S.timer = null; } }
+
+function startPolling() {
+  stopPolling();
+  updateSyncMeta();
+  if (!S.auto || !S.boot) return;
+  const st = S.boot.user.status;
+  if (st !== 'ativo' && st !== 'pendente') return;
+  S.timer = setInterval(poll, Math.max(15, S.boot.app.autoRefreshSeg || 60) * 1000);
+}
+
+async function poll() {
+  if (document.hidden || S.busy) return;
+  try {
+    if (S.boot.user.status === 'pendente') {
+      const b = await api('getBootstrap');
+      if (b.user.status !== 'pendente') { toast(b.user.status === 'ativo' ? 'Seu acesso foi aprovado!' : 'Sua solicitação foi analisada.'); await boot(b); }
+      return;
+    }
+    const v = await api('getVersion');
+    S.lastSync = new Date();
+    if (S.version && v !== S.version) {
+      await reloadAll();
+      toast('Os dados foram atualizados automaticamente.');
+    }
+    updateSyncMeta();
+  } catch (e) { handleErr(e); }
+}
+
+document.addEventListener('visibilitychange', () => { if (!document.hidden && S.auto && S.timer) poll(); });
+
+async function boot(pre) {
+  stopPolling();
+  try {
+    S.boot = pre || await api('getBootstrap');
+    const srvTheme = S.boot.user && S.boot.user.tema;
+    if (srvTheme && srvTheme !== S.theme && APP_THEMES.includes(srvTheme) && LS.get('ccyber.theme', null) === null) { S.theme = srvTheme; LS.set('ccyber.theme', srvTheme); }
+    applyTheme();
+    S.data = null; S.admin = null;
+    render();
+    if (S.boot.user.status === 'ativo') {
+      await reloadAll();
+    }
+    startPolling();
+  } catch (e) {
+    $('#main').innerHTML = '<div class="card" style="max-width:560px;margin:40px auto"><h2>Não foi possível carregar o portal</h2><p class="muted">' + esc(errMsg(e)) + '</p><button type="button" class="btn primary" onclick="location.reload()">Tentar novamente</button></div>';
+  }
+}
+const APP_THEMES = ['light', 'dark', 'system'];
+
+boot();
+</script>

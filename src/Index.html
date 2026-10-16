@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title><?= appName ?></title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script>
+    /* Aplica o tema antes do primeiro paint para evitar "flash" de tema errado. */
+    (function () {
+      var pref = 'system';
+      try { pref = localStorage.getItem('ccyber.theme') || 'system'; } catch (e) {}
+      var dark = pref === 'dark' || (pref === 'system' && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches);
+      document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+      var sb = 'expanded';
+      try { sb = localStorage.getItem('ccyber.sidebar') || 'expanded'; } catch (e) {}
+      document.documentElement.setAttribute('data-sidebar', sb);
+    })();
+  </script>
+  <?!= include('Styles'); ?>
+</head>
+<body>
+  <a class="skip" href="#main">Pular para o conteúdo</a>
+  <div class="shell">
+    <aside id="sidebar" class="sidebar" aria-label="Menu lateral"></aside>
+    <div class="content">
+      <header id="hdr" class="topbar"></header>
+      <main id="main" tabindex="-1">
+        <div class="boot"><span class="spinner" aria-hidden="true"></span>Carregando o portal…</div>
+      </main>
+    </div>
+  </div>
+  <div class="scrim" data-act="close-drawer"></div>
+  <div id="modal-root"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <?!= include('Scripts'); ?>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "name": "portal-gestao-contratos-ciberseguranca",
+  "version": "1.0.0",
+  "description": "Portal em Google Apps Script para gestão de contratos de serviços de Cibersegurança, com alertas 90/60/30 dias e controle de acesso com aprovação.",
+  "private": true,
+  "license": "MIT",
+  "author": "Carlos Quintas",
+  "scripts": {
+    "test": "node tests/backend.test.js",
+    "test:ui": "node tests/build-harness.js && node tests/ui.test.js"
+  },
+  "devDependencies": {
+    "playwright": "^1.56.0"
+  }
+}

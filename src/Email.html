@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head>
+<body style="margin:0;padding:0;background:#E9ECE9;">
+<? var accent = d.vencido ? ['#FDECEA','#8E1B12'] : (Number(d.janela) <= 30 ? ['#FFEDE0','#9A3412'] : (Number(d.janela) <= 60 ? ['#FEF3D7','#7C4A03'] : ['#E5EEFA','#173F73'])); ?>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#E9ECE9;">
+  <tr><td align="center" style="padding:24px 12px;">
+    <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:100%;background:#FFFFFF;border:1px solid #DDE2DE;border-radius:8px;font-family:Arial,Helvetica,sans-serif;color:#16201C;">
+      <tr><td style="background:#13241E;padding:16px 24px;border-radius:8px 8px 0 0;">
+        <table role="presentation" cellpadding="0" cellspacing="0"><tr>
+          <? if (d.temLogo) { ?><td><img src="cid:logo" alt="Logo" width="62" height="36" style="display:block;width:62px;height:36px;"></td><td width="12"></td><? } ?>
+          <td style="color:#F3F4F1;font-size:14px;font-weight:bold;line-height:1.3;"><?= d.appName ?></td>
+        </tr></table>
+      </td></tr>
+
+      <? if (d.teste) { ?>
+      <tr><td style="background:#FEF3D7;color:#7C4A03;font-size:12px;padding:8px 24px;">E-mail de TESTE enviado pelo portal — nenhum registro foi gravado no histórico de alertas.</td></tr>
+      <? } ?>
+
+      <tr><td style="padding:24px;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:<?= accent[0] ?>;border-radius:8px;">
+          <tr>
+            <td width="96" align="center" style="padding:16px 8px;font-family:'Courier New',monospace;font-size:38px;font-weight:bold;color:<?= accent[1] ?>;"><?= d.diasAbs ?></td>
+            <td style="padding:16px 16px 16px 0;color:<?= accent[1] ?>;">
+              <? if (d.vencido) { ?>
+                <div style="font-size:16px;font-weight:bold;">dias desde o fim da vigência</div>
+                <div style="font-size:13px;">Contrato vencido em <?= d.fim ?> sem renovação registrada no portal</div>
+              <? } else { ?>
+                <div style="font-size:16px;font-weight:bold;">dias para o fim da vigência</div>
+                <div style="font-size:13px;">Fim em <?= d.fim ?> · janela de <?= d.janela ?> dias</div>
+              <? } ?>
+            </td>
+          </tr>
+        </table>
+
+        <p style="font-size:14px;line-height:1.55;margin:20px 0;">
+          Olá,<br>
+          <? if (d.vencido) { ?>
+            o contrato abaixo está com a vigência encerrada. Confirme com Compras se houve renovação e registre a nova vigência no portal, ou marque o contrato como encerrado.
+          <? } else { ?>
+            o contrato abaixo entrou na janela de aviso de <b><?= d.janela ?> dias</b>. Inicie a tratativa de renovação ou encerramento e registre a decisão no portal.
+          <? } ?>
+        </p>
+
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:13px;border-collapse:collapse;">
+          <? var rows = [['Contrato', d.id], ['Parceiro', d.parceiro], ['Ferramenta', d.ferramenta + ' — ' + d.finalidade], ['Tipo de serviço', d.tipo + ' · SLA: ' + d.sla], ['Vigência', d.inicio + ' → ' + d.fim], ['Reajuste', d.reajuste], ['Valor suporte', d.valorSuporte], [d.rotOrcado + ' / ' + d.rotPago, d.orcado + ' / ' + d.pago], ['Gestor responsável', d.gestor], ['Próximo aviso', d.proximo]];
+             for (var i = 0; i < rows.length; i++) { ?>
+          <tr>
+            <td width="170" style="padding:8px 0;border-top:1px solid #EEF0EE;color:#4E5B55;vertical-align:top;"><?= rows[i][0] ?></td>
+            <td style="padding:8px 0;border-top:1px solid #EEF0EE;vertical-align:top;"><?= rows[i][1] ?></td>
+          </tr>
+          <? } ?>
+        </table>
+
+        <? if (d.url) { ?>
+        <table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:24px;"><tr>
+          <td style="background:#0F5C48;border-radius:6px;"><a href="<?= d.url ?>" style="display:inline-block;padding:12px 22px;color:#FFFFFF;text-decoration:none;font-weight:bold;font-size:14px;">Abrir o portal</a></td>
+        </tr></table>
+        <? } ?>
+      </td></tr>
+
+      <tr><td style="background:#F6F7F5;padding:14px 24px;font-size:12px;color:#4E5B55;line-height:1.5;border-radius:0 0 8px 8px;">
+        Mensagem automática do <?= d.appName ?>. Cada janela de aviso é enviada uma única vez por vigência. Para alterar o gestor responsável ou os destinatários, fale com um administrador do portal.
+      </td></tr>
+    </table>
+  </td></tr>
+</table>
+</body>
+</html>
